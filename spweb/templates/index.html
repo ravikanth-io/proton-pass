@@ -1,0 +1,155 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>SmartPass — Live Demo</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <h1>SmartPass — Generator, Evaluator & Client-side Vault</h1>
+
+  <section id="generator">
+    <label>Length <input id="length" type="number" value="16" min="4" max="64"></label>
+    <label><input id="uppercase" type="checkbox" checked> Uppercase</label>
+    <label><input id="lowercase" type="checkbox" checked> Lowercase</label>
+    <label><input id="digits" type="checkbox" checked> Digits</label>
+    <label><input id="symbols" type="checkbox" checked> Symbols</label>
+    <button id="genBtn">Generate</button>
+    <input id="pwOut" readonly style="width:80%">
+    <button id="copyBtn">Copy</button>
+    <button id="saveQuickBtn">Save (Quick)</button>
+  </section>
+
+  <section id="evaluator">
+    <input id="evalInput" placeholder="Type a password to evaluate..." style="width:80%">
+    <div id="scoreBox"></div>
+  </section>
+
+  <section id="vault">
+    <h2>Client-side Vault (encrypted in your browser)</h2>
+    <p><i>The vault is encrypted locally with your master password using WebCrypto. The server never sees your master password or plaintext secrets.</i></p>
+    <button id="vaultNewBtn">Create/Open Vault (enter master)</button>
+    <button id="vaultListBtn">List Entries</button>
+    <button id="vaultExportBtn">Export Encrypted Vault</button>
+    <button id="vaultImportBtn">Import Encrypted Vault</button>
+    <div id="vaultList"></div>
+  </section>
+
+<script src="/static/vault.js"></script>
+<script>
+async function postJSON(url, body) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body || {})
+  });
+  return res.json();
+}
+
+document.getElementById('genBtn').onclick = async () => {
+  const opts = {
+    length: Number(document.getElementById('length').value),
+    uppercase: document.getElementById('uppercase').checked,
+    lowercase: document.getElementById('lowercase').checked,
+    digits: document.getElementById('digits').checked,
+    symbols: document.getElementById('symbols').checked
+  };
+  const r = await postJSON('/generate', opts);
+  document.getElementById('pwOut').value = r.password;
+  document.getElementById('evalInput').value = r.password;
+  scorePassword(); // evaluate quickly
+};
+
+document.getElementById('copyBtn').onclick = async () => {
+  const pw = document.getElementById('pwOut').value;
+  if (!pw) return alert('No password to copy');
+  await navigator.clipboard.writeText(pw);
+  alert('Copied to clipboard (remember to clear it).');
+}
+
+// evaluator
+async function scorePassword() {
+  const pw = document.getElementById('evalInput').value;
+  const r = await postJSON('/score', {password: pw});
+  const el = document.getElementById('scoreBox');
+  el.innerHTML = `<b>Score:</b> ${r.score} / 100<br><b>Label:</b> ${r.label || r.label}`;
+  if (r.explanations) {
+    el.innerHTML += '<ul>' + r.explanations.map(x => '<li>' + x + '</li>').join('') + '</ul>';
+  }
+}
+document.getElementById('evalInput').addEventListener('input', scorePassword);
+
+// Vault buttons
+document.getElementById('vaultNewBtn').onclick = async () => {
+  const master = prompt('Enter vault master password (this never leaves your browser):');
+  if (!master) return;
+  // initialize empty vault on client
+  await VaultClient.initOrOpen(master);
+  alert('Vault opened (in memory). Use "List Entries" to view.');
+};
+
+document.getElementById('vaultListBtn').onclick = async () => {
+  const entries = await VaultClient.list();
+  const container = document.getElementById('vaultList');
+  if (!entries || entries.length === 0) { container.innerHTML = '<i>Vault empty.</i>'; return; }
+  container.innerHTML = '';
+  entries.forEach((e,i) => {
+    const div = document.createElement('div');
+    div.innerHTML = `<b>[${i}] ${e.name}</b> — ${e.username || ''} <button data-i="${i}" class="copyPw">Copy pw</button> <button data-i="${i}" class="del">Remove</button>`;
+    container.appendChild(div);
+  });
+  container.querySelectorAll('.copyPw').forEach(btn => {
+    btn.onclick = async (ev) => {
+      const i = Number(ev.target.dataset.i);
+      const pw = await VaultClient.getPassword(i);
+      await navigator.clipboard.writeText(pw);
+      alert('Password copied to clipboard.');
+    };
+  });
+  container.querySelectorAll('.del').forEach(btn => {
+    btn.onclick = async (ev) => {
+      const i = Number(ev.target.dataset.i);
+      if (!confirm('Remove entry?')) return;
+      await VaultClient.remove(i);
+      document.getElementById('vaultListBtn').click();
+    };
+  });
+};
+
+document.getElementById('vaultExportBtn').onclick = async () => {
+  const blob = await VaultClient.exportEncrypted();
+  if (!blob) return alert('No vault to export.');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'smartpass-vault.bin';
+  a.click();
+};
+
+document.getElementById('vaultImportBtn').onclick = async () => {
+  const f = document.createElement('input');
+  f.type = 'file';
+  f.accept = '.bin';
+  f.onchange = async () => {
+    const file = f.files[0];
+    const data = await file.arrayBuffer();
+    const ok = await VaultClient.importEncrypted(new Uint8Array(data));
+    if (ok) alert('Imported encrypted vault. Open with your master password (Vault -> Create/Open).');
+    else alert('Import stored but you must open with correct master password.');
+  };
+  f.click();
+};
+
+// Quick save: ask name/username and save the generated password
+document.getElementById('saveQuickBtn').onclick = async () => {
+  const pw = document.getElementById('pwOut').value;
+  if (!pw) return alert('Generate a password first');
+  const name = prompt('Entry name (site):', 'generated');
+  if (!name) return;
+  const username = prompt('Username (optional):', '');
+  const ok = await VaultClient.add({name, username, password: pw, notes: 'saved via web demo'});
+  if (ok) alert('Saved to client-side vault (encrypted).');
+  else alert('Could not save. Open/create vault first (Vault -> Create/Open).');
+};
+</script>
+</body>
+</html>
